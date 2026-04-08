@@ -1,0 +1,49 @@
+# ── CREATE ──────────────────────────────────────────────
+
+# Create a new user
+curl -s -X POST http://127.0.0.1:5000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Eve","email":"eve@test.com","password":"pass123"}' | python3 -m json.tool
+
+# Create a new order
+curl -s -X POST http://127.0.0.1:8080/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{"userId":1,"product":"Webcam","quantity":1,"price":89.99}' | python3 -m json.tool
+
+# Create a notification
+curl -s -X POST http://127.0.0.1:3000/api/notifications \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":1,"type":"email","message":"Your order has shipped!"}' | python3 -m json.tool
+
+# ── READ ────────────────────────────────────────────────
+
+# Get single user
+curl -s http://127.0.0.1:5000/api/users/1 | python3 -m json.tool
+
+# Get orders by user
+curl -s http://127.0.0.1:8080/api/orders/user/1 | python3 -m json.tool
+
+# Get pending notifications
+curl -s http://127.0.0.1:3000/api/notifications/pending | python3 -m json.tool
+
+# ── UPDATE ──────────────────────────────────────────────
+
+# Update order status
+curl -s -X PUT http://127.0.0.1:8080/api/orders/3/status \
+  -H "Content-Type: application/json" \
+  -d '{"status":"confirmed"}' | python3 -m json.tool
+
+# Mark notification as sent
+curl -s -X PUT http://127.0.0.1:3000/api/notifications/1/send | python3 -m json.tool
+
+# ── DELETE ──────────────────────────────────────────────
+
+# Delete a user
+curl -s -X DELETE http://127.0.0.1:5000/api/users/4 | python3 -m json.tool
+
+# ── VIA GATEWAY (8081) ──────────────────────────────────
+
+curl -s http://127.0.0.1:8081/health           | python3 -m json.tool
+curl -s http://127.0.0.1:8081/api/users        | python3 -m json.tool
+curl -s http://127.0.0.1:8081/api/orders       | python3 -m json.tool
+curl -s http://127.0.0.1:8081/api/notifications| python3 -m json.tool
