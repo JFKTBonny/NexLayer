@@ -7,7 +7,7 @@ pipeline {
         IMAGE_NAME   = 'santonix/orders'
         IMAGE_TAG    = "${BUILD_NUMBER}"
         DOCKER_CRED  = 'dockerhub-creds'
-        MAVEN_OPTS   = '' 
+        MAVEN_OPTS   = "MAVEN_OPTS = "-Dmaven.repo.local=/tmp/.m2"" 
     }
 
     stages {
@@ -57,6 +57,9 @@ pipeline {
                 dir('order-service') {
                     sh '''
                         echo "=== Compiling ==="
+                        export MAVEN_CONFIG=/tmp/.m2
+                        export MAVEN_OPTS="-Dmaven.repo.local=/tmp/.m2"
+                        mkdir -p /tmp/.m2
                         mvn -B clean compile
                     '''
                 }
