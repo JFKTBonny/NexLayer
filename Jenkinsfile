@@ -99,7 +99,8 @@ pipeline {
                     image 'santonix/ci-python-docker:latest'
                     reuseNode true
                     args  """-v /var/run/docker.sock:/var/run/docker.sock
-                             --group-add ${env.DOCKER_GID}"""
+                             --group-add ${env.DOCKER_GID}
+                             -u root """
                 }
             }
             steps {
