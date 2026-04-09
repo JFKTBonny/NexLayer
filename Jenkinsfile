@@ -134,10 +134,12 @@ pipeline {
             post {
                 always {
                     publishHTML([
-                        reportDir:   'order-service/target/site/jacoco',
+                        reportDir: 'order-service/target/site/jacoco',
                         reportFiles: 'index.html',
-                        reportName:  'JaCoCo Coverage — Orders',
-                        keepAll:     true
+                        reportName: 'JaCoCo Coverage — Orders',
+                        keepAll: true,
+                        alwaysLinkToLastBuild: true,
+                        allowMissing: true
                     ])
                 }
             }
