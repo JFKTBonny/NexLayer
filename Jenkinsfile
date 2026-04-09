@@ -1,8 +1,5 @@
-// user-service/Jenkinsfile — fully corrected
+// user-service/Jenkinsfile
 pipeline {
-
-    // agent any — works on single node Jenkins
-    // no label needed, no agent none issues
     agent any
 
     environment {
@@ -10,13 +7,12 @@ pipeline {
         IMAGE_NAME   = 'santonix/users'
         IMAGE_TAG    = "${BUILD_NUMBER}"
         DOCKER_CRED  = 'dockerhub'
+        // Use workspace-local virtualenv — no permission issues
+        VENV_DIR     = "${WORKSPACE}/venv"
     }
 
     stages {
 
-        // ── 1. Checkout + resolve GID ────────────────────
-        // Runs directly on Jenkins node (agent any)
-        // This is where we capture DOCKER_GID safely
         stage('Checkout') {
             steps {
                 checkout scm
@@ -25,120 +21,114 @@ pipeline {
                         script: 'git rev-parse --abbrev-ref HEAD',
                         returnStdout: true
                     ).trim()
-
                     env.SHORT_SHA = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
                     ).trim()
-
                     env.AUTHOR = sh(
                         script: 'git log -1 --pretty=%an',
                         returnStdout: true
                     ).trim()
 
-                    // Verify docker socket is accessible
-                    // before trying to use it
-                    def socketCheck = sh(
-                        script: 'test -S /var/run/docker.sock && echo "OK" || echo "MISSING"',
+                    // Get docker GID safely
+                    def socketExists = sh(
+                        script: 'test -S /var/run/docker.sock && echo yes || echo no',
                         returnStdout: true
                     ).trim()
 
-                    if (socketCheck != 'OK') {
-                        error("""
-                            Docker socket not found at /var/run/docker.sock
-                            Jenkins container must be started with:
-                            -v /var/run/docker.sock:/var/run/docker.sock
-                        """.stripIndent())
-                    }
-
-                    // Now safe to get GID
-                    env.DOCKER_GID = sh(
-                        script: "stat -c '%g' /var/run/docker.sock",
-                        returnStdout: true
-                    ).trim()
+                    env.DOCKER_GID = socketExists == 'yes'
+                        ? sh(script: "stat -c '%g' /var/run/docker.sock", returnStdout: true).trim()
+                        : '0'
 
                     echo """
-                        ╔═══════════════════════════════════╗
-                        ║  NexLayer — ${SERVICE_NAME}
-                        ╠═══════════════════════════════════╣
-                        ║  Branch:     ${env.BRANCH}
-                        ║  Commit:     ${env.SHORT_SHA}
-                        ║  Author:     ${env.AUTHOR}
-                        ║  Docker GID: ${env.DOCKER_GID}
-                        ╚═══════════════════════════════════╝
+                        Branch:     ${env.BRANCH}
+                        Commit:     ${env.SHORT_SHA}
+                        Author:     ${env.AUTHOR}
+                        Docker GID: ${env.DOCKER_GID}
+                        Venv:       ${env.VENV_DIR}
                     """.stripIndent()
                 }
             }
         }
 
-        // ── 2. Install ───────────────────────────────────
+        // ── Install directly on Jenkins node ─────────────
+        // No Docker container — no permission issues
+        // Uses a virtualenv in the workspace (always writable)
         stage('Install') {
-            agent {
-                docker {
-                    image 'santonix/ci-python-docker:latest'
-                    reuseNode true
-                    args  """-v /var/run/docker.sock:/var/run/docker.sock
-                             --group-add ${env.DOCKER_GID}"""
-                }
-            }
             steps {
                 dir('user-service') {
-                    sh '''
+                    sh """
+                        echo "=== Creating virtualenv in workspace ==="
+                        python3 -m venv ${VENV_DIR}
+
+                        echo "=== Activating and installing ==="
+                        . ${VENV_DIR}/bin/activate
+
                         pip install --upgrade pip --quiet
                         pip install -r requirements.txt --quiet
+                        pip install \
+                            black==24.3.0 \
+                            flake8==7.0.0 \
+                            bandit \
+                            safety \
+                            pytest \
+                            pytest-flask \
+                            pytest-cov \
+                            --quiet
+
+                        echo "=== Installed tools ==="
+                        python --version
+                        pip --version
+                        pytest --version
+                        black --version
+                        flake8 --version
+                        bandit --version
+
                         echo "Install done ✓"
-                    '''
+                    """
+                }
+            }
+            post {
+                failure {
+                    echo "❌ Install failed — check requirements.txt"
                 }
             }
         }
 
-        // ── 3. Lint ──────────────────────────────────────
+        // ── Lint — uses virtualenv on Jenkins node ────────
         stage('Lint') {
-            agent {
-                docker {
-                    image 'santonix/ci-python-docker:latest'
-                    reuseNode true
-                    args  """-v /var/run/docker.sock:/var/run/docker.sock
-                             --group-add ${env.DOCKER_GID}
-                             -u root """
-                }
-            }
             steps {
                 dir('user-service') {
-                    sh '''
-                        echo "=== Black ==="
+                    sh """
+                        . ${VENV_DIR}/bin/activate
+
+                        echo "=== Black (auto-format) ==="
                         black app.py --line-length 88
                         echo "Black ✓"
 
-                        echo "=== Flake8 ==="
+                        echo "=== Flake8 (lint) ==="
                         flake8 app.py \
                             --max-line-length=88 \
                             --extend-ignore=E203,W503 \
                             --statistics
                         echo "Flake8 ✓"
-                    '''
+                    """
                 }
             }
             post {
                 failure {
-                    echo "❌ Lint failed on ${env.BRANCH} by ${env.AUTHOR}"
+                    echo "❌ Lint failed on ${env.BRANCH}"
                 }
             }
         }
 
-        // ── 4. Unit Tests ────────────────────────────────
+        // ── Unit Tests — uses virtualenv on Jenkins node ──
         stage('Unit Tests') {
-            agent {
-                docker {
-                    image 'santonix/ci-python-docker:latest'
-                    reuseNode true
-                    args  """-v /var/run/docker.sock:/var/run/docker.sock
-                             --group-add ${env.DOCKER_GID}"""
-                }
-            }
             steps {
                 dir('user-service') {
-                    sh '''
+                    sh """
+                        . ${VENV_DIR}/bin/activate
+
                         pytest tests/ \
                             --ignore=tests/test_integration.py \
                             -v \
@@ -146,7 +136,9 @@ pipeline {
                             --cov=app \
                             --cov-report=xml:coverage.xml \
                             --tb=short
-                    '''
+
+                        echo "Tests passed ✓"
+                    """
                 }
             }
             post {
@@ -164,31 +156,27 @@ pipeline {
             }
         }
 
-        // ── 5. Security Scan ─────────────────────────────
+        // ── Security Scan — uses virtualenv ───────────────
         stage('Security Scan') {
-            agent {
-                docker {
-                    image 'santonix/ci-python-docker:latest'
-                    reuseNode true
-                    args  """-v /var/run/docker.sock:/var/run/docker.sock
-                             --group-add ${env.DOCKER_GID}"""
-                }
-            }
             steps {
                 dir('user-service') {
-                    sh '''
+                    sh """
+                        . ${VENV_DIR}/bin/activate
+
+                        echo "=== Bandit ==="
                         bandit -r app.py \
                             -f json \
                             -o bandit-report.json \
                             --severity-level medium || true
+                        echo "Bandit done ✓"
 
+                        echo "=== Safety ==="
                         safety check \
                             -r requirements.txt \
                             --json \
                             -o safety-report.json || true
-
-                        echo "Security scan done ✓"
-                    '''
+                        echo "Safety done ✓"
+                    """
                 }
             }
             post {
@@ -201,12 +189,13 @@ pipeline {
             }
         }
 
-        // ── 6. Docker Build ──────────────────────────────
-        // Runs on agent any — docker CLI available via socket
+        // ── Docker Build — runs on Jenkins node directly ──
+        // Docker CLI available via socket mount on Jenkins
         stage('Docker Build') {
             steps {
                 dir('user-service') {
                     sh """
+                        echo "=== Building Docker image ==="
                         docker build \
                             --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
                             --build-arg GIT_COMMIT=${env.SHORT_SHA} \
@@ -225,11 +214,9 @@ pipeline {
             }
         }
 
-        // ── 7. Docker Push ───────────────────────────────
+        // ── Docker Push — main branch only ────────────────
         stage('Docker Push') {
-            when {
-                branch 'main'
-            }
+            when { branch 'main' }
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: "${DOCKER_CRED}",
@@ -250,38 +237,31 @@ pipeline {
         }
     }
 
-    // ── Post — runs on agent any context ─────────────────
-    // agent any guarantees node context is always available
-    // post{} sh{} and cleanWs() work without issues
     post {
         always {
             script {
-                def img = env.IMAGE_NAME
-                def tag = env.IMAGE_TAG
-                if (img && tag) {
-                    sh "docker rmi ${img}:${tag} || true"
-                } else {
-                    echo "No image to clean up"
-                }
+                // Clean up image if it was built
+                sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
+                // Clean up virtualenv with workspace
             }
             cleanWs()
         }
         success {
             echo """
                 ✅ ${SERVICE_NAME} #${BUILD_NUMBER} passed
-                Branch:  ${env.BRANCH}
-                Commit:  ${env.SHORT_SHA}
-                Author:  ${env.AUTHOR}
-                Image:   ${IMAGE_NAME}:${IMAGE_TAG}
+                Branch: ${env.BRANCH}
+                Commit: ${env.SHORT_SHA}
+                Author: ${env.AUTHOR}
+                Image:  ${IMAGE_NAME}:${IMAGE_TAG}
             """.stripIndent()
         }
         failure {
             echo """
                 ❌ ${SERVICE_NAME} #${BUILD_NUMBER} FAILED
-                Branch:  ${env.BRANCH}
-                Commit:  ${env.SHORT_SHA}
-                Author:  ${env.AUTHOR}
-                Logs:    ${BUILD_URL}console
+                Branch: ${env.BRANCH}
+                Commit: ${env.SHORT_SHA}
+                Author: ${env.AUTHOR}
+                Logs:   ${BUILD_URL}console
             """.stripIndent()
         }
     }
