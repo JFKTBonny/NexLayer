@@ -1,12 +1,8 @@
 // nexlayer-users/Jenkinsfile — with full user/permission checks
 pipeline {
-    agent {
-        docker {
-            image 'santonix/ci-python-docker:latest'
-            args  '''-v /var/run/docker.sock:/var/run/docker.sock
-                     --group-add $(stat -c '%g' /var/run/docker.sock)'''
-        }
-    }
+    agent none
+
+    
 
     environment {
         SERVICE_NAME = 'user-service'
@@ -15,6 +11,25 @@ pipeline {
     }
 
     stages {
+
+        stage('Test Docker Access') {
+            steps {
+                script {
+                    def dockerGid = sh(
+                        script: "stat -c %g /var/run/docker.sock",
+                        returnStdout: true
+                    ).trim()
+
+                    docker.image('santonix/ci-python-docker:latest').inside(
+                        "--group-add ${dockerGid} -v /var/run/docker.sock:/var/run/docker.sock"
+                    ) {
+                        sh 'docker ps'
+                    }
+                }
+            }
+        }
+
+
 
         stage('Environment Check') {
             steps {
@@ -44,6 +59,31 @@ pipeline {
                 '''
             }
         }
+
+        
+
+        // Host stage — runs on Jenkins controller directly
+        stage('Checkout') {
+            agent { label 'built-in' }  // built-in is always available
+            steps {
+                checkout scm
+                script {
+                    env.DOCKER_GID = sh(
+                        script: "stat -c '%g' /var/run/docker.sock",
+                        returnStdout: true
+                    ).trim()
+                    env.BRANCH = sh(
+                        script: 'git rev-parse --abbrev-ref HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.SHORT_SHA = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+
 
         stage('Install App Dependencies') {
             steps {
