@@ -55,19 +55,15 @@ pipeline {
         stage('Compile') {
             steps {
                 dir('order-service') {
-                    sh """
-                        mvn clean compile ${MAVEN_OPTS}
-                        echo "Compile done ✓"
-                    """
+                    sh '''
+                        echo "=== Compiling ==="
+                        mvn -B clean compile
+                    '''
                 }
             }
             post {
                 failure {
                     echo "❌ Compile failed — check Java source errors"
-                    archiveArtifacts(
-                        artifacts:        'order-service/target/*.log',
-                        allowEmptyArchive: true
-                    )
                 }
             }
         }
