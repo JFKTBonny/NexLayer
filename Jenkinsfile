@@ -7,7 +7,7 @@ pipeline {
         IMAGE_NAME   = 'santonix/orders'
         IMAGE_TAG    = "${BUILD_NUMBER}"
         DOCKER_CRED  = 'dockerhub-creds'
-        MAVEN_OPTS   = '-B -q'
+        MAVEN_OPTS   = '' 
     }
 
     stages {
