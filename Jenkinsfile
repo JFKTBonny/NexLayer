@@ -1,4 +1,4 @@
-```groovy
+
 // user-service/Jenkinsfile — FIXED (stable + production-safe)
 
 pipeline {
@@ -165,4 +165,4 @@ pipeline {
         }
     }
 }
-```
+
