@@ -59,8 +59,8 @@ pipeline {
 
                             sh '''
                                 echo "=== Install ==="
-                                export HOME=/tmp
-                                export PATH=$HOME/.local/bin:$PATH
+                                python -m venv venv
+                                . venv/bin/activate
                                 pip install -r requirements.txt --quiet
 
                                 echo "=== Lint ==="
