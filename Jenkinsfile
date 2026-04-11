@@ -1,18 +1,68 @@
-// gateway/Jenkinsfile
+// Jenkinsfile — repo root
+// Orchestrates all 4 NexLayer services
+
+def services = [
+    [
+        name:    'user-service',
+        image:   'santonix/users',
+        dir:     'user-service',
+        port:    '5000',
+        health:  'http://localhost:5000/health'
+    ],
+    [
+        name:    'order-service',
+        image:   'santonix/orders',
+        dir:     'order-service',
+        port:    '8080',
+        health:  'http://localhost:8080/actuator/health'
+    ],
+    [
+        name:    'notification-service',
+        image:   'santonix/notify',
+        dir:     'notification-service',
+        port:    '3000',
+        health:  'http://localhost:3000/health'
+    ],
+    [
+        name:    'gateway',
+        image:   'santonix/gateway',
+        dir:     'gateway',
+        port:    '8081',
+        health:  'http://localhost:8081/health'
+    ]
+]
+
 pipeline {
     agent any
 
     environment {
-        SERVICE_NAME = 'gateway'
-        IMAGE_NAME   = 'santonix/gateway'
-        IMAGE_TAG    = "${BUILD_NUMBER}"
-        DOCKER_CRED  = 'dockerhub-creds'
-        // CGO_ENABLED=0 for binary build — NOT for tests
-        // Tests override this per stage
-        GOOS         = 'linux'
-        GOARCH       = 'amd64'
-        GOPATH       = "${WORKSPACE}/.gopath"
-        GOCACHE      = "${WORKSPACE}/.gocache"
+        APP_NAME    = 'NexLayer'
+        APP_VERSION = "1.0.${BUILD_NUMBER}"
+        DOCKER_CRED = 'dockerhub'
+    }
+
+    parameters {
+        choice(
+            name:        'ENVIRONMENT',
+            choices:     ['dev', 'staging', 'prod'],
+            description: 'Target deploy environment'
+        )
+        booleanParam(
+            name:         'RUN_INTEGRATION_TESTS',
+            defaultValue: true,
+            description:  'Run full stack integration tests'
+        )
+        booleanParam(
+            name:         'DEPLOY',
+            defaultValue: false,
+            description:  'Deploy after successful build'
+        )
+    }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '15'))
+        disableConcurrentBuilds()
     }
 
     stages {
@@ -33,223 +83,121 @@ pipeline {
                         script: 'git log -1 --pretty=%an',
                         returnStdout: true
                     ).trim()
+
                     echo """
-                        Service: ${SERVICE_NAME}
-                        Branch:  ${env.BRANCH}
-                        Commit:  ${env.SHORT_SHA}
-                        Author:  ${env.AUTHOR}
+                        ╔══════════════════════════════════════╗
+                        ║  NexLayer Master Pipeline
+                        ╠══════════════════════════════════════╣
+                        ║  Version:  ${APP_VERSION}
+                        ║  Branch:   ${env.BRANCH}
+                        ║  Commit:   ${env.SHORT_SHA}
+                        ║  Author:   ${env.AUTHOR}
+                        ║  Target:   ${params.ENVIRONMENT}
+                        ╚══════════════════════════════════════╝
                     """.stripIndent()
                 }
             }
         }
 
-        stage('Pre-flight') {
+        // ── Build all 4 services in parallel ─────────────
+        stage('Build All Services') {
             steps {
-                sh '''
-                    go version
-                    docker --version
-                    echo "CGO available: $(go env CGO_ENABLED)"
-                    echo "CC compiler:   $(go env CC)"
-                '''
-            }
-        }
-
-        stage('Dependencies') {
-            steps {
-                dir('gateway') {
-                    sh """
-                        mkdir -p ${GOPATH}
-                        mkdir -p ${GOCACHE}
-                        go mod download
-                        go mod verify
-                        echo "Dependencies ready ✓"
-                    """
-                }
-            }
-            post {
-                failure {
-                    echo "❌ go mod failed — check go.mod and go.sum"
-                }
-            }
-        }
-
-        stage('Lint') {
-            steps {
-                dir('gateway') {
-                    sh '''
-                        echo "=== go vet ==="
-                        go vet ./...
-                        echo "go vet ✓"
-
-                        echo "=== gofmt ==="
-                        UNFORMATTED=$(gofmt -l .)
-                        if [ -n "$UNFORMATTED" ]; then
-                            echo "Auto-formatting: $UNFORMATTED"
-                            gofmt -w .
-                            echo "gofmt fixed ✓"
-                        else
-                            echo "gofmt ✓"
-                        fi
-                    '''
-                }
-            }
-            post {
-                failure {
-                    echo "❌ Lint failed — ${env.BRANCH}"
-                }
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                dir('gateway') {
-                    sh '''
-                        echo "=== Go Unit Tests ==="
-
-                        # CGO_ENABLED=1 needed for -race detector
-                        # Override the pipeline-level CGO_ENABLED=0
-                        # If gcc not available — run without -race
-                        if command -v gcc > /dev/null 2>&1; then
-                            echo "CGO available — running with race detector"
-                            CGO_ENABLED=1 go test ./... \
-                                -v \
-                                -race \
-                                -coverprofile=coverage.out \
-                                -covermode=atomic \
-                                -timeout=60s \
-                                2>&1 | tee test-output.txt
-                        else
-                            echo "CGO not available — running without race detector"
-                            CGO_ENABLED=0 go test ./... \
-                                -v \
-                                -coverprofile=coverage.out \
-                                -covermode=count \
-                                -timeout=60s \
-                                2>&1 | tee test-output.txt
-                        fi
-
-                        echo "Tests done ✓"
-                    '''
-                }
-            }
-            post {
-                always {
-                    script {
-                        dir('gateway') {
-                            // Generate HTML coverage only if coverage.out exists
-                            if (fileExists('gateway/coverage.out')) {
-                                sh '''
-                                    go tool cover \
-                                        -html=coverage.out \
-                                        -o coverage.html
-                                    go tool cover \
-                                        -func=coverage.out \
-                                        | tail -1
-                                    echo "Coverage report generated ✓"
-                                '''
-                                publishHTML([
-                                    reportDir:             'gateway',
-                                    reportFiles:           'coverage.html',
-                                    reportName:            'Go Coverage — Gateway',
-                                    allowMissing:          true,
-                                    alwaysLinkToLastBuild: true,
-                                    keepAll:               true
-                                ])
-                            } else {
-                                echo "coverage.out not found — tests may have failed before coverage was written"
+                script {
+                    def builds = [:]
+                    services.each { svc ->
+                        def s = svc
+                        builds["Build: ${s.name}"] = {
+                            dir(s.dir) {
+                                sh """
+                                    docker build \
+                                        --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                                        --build-arg GIT_COMMIT=${env.SHORT_SHA} \
+                                        -t ${s.image}:${APP_VERSION} \
+                                        -t ${s.image}:latest \
+                                        .
+                                    echo "✅ Built ${s.image}:${APP_VERSION}"
+                                """
                             }
-
-                            archiveArtifacts(
-                                artifacts:        'test-output.txt',
-                                allowEmptyArchive: true
-                            )
                         }
                     }
+                    parallel builds
                 }
+            }
+            post {
                 failure {
-                    echo "❌ Tests failed — ${env.BRANCH} | ${env.SHORT_SHA}"
+                    echo "❌ One or more service builds failed"
                 }
             }
         }
 
-        stage('Security Scan') {
+        // ── Integration tests — full stack ────────────────
+        stage('Integration Tests') {
+            when {
+                expression { params.RUN_INTEGRATION_TESTS == true }
+            }
             steps {
-                dir('gateway') {
-                    sh '''
-                        echo "=== gosec security scan ==="
-                        go install \
-                            github.com/securego/gosec/v2/cmd/gosec@latest \
-                            2>/dev/null || true
+                script {
+                    try {
+                        sh '''
+                            echo "Starting NexLayer stack..."
+                            docker compose up -d
+                            echo "Waiting for services..."
+                            sleep 25
+                        '''
 
-                        if command -v gosec > /dev/null 2>&1; then
-                            gosec \
-                                -fmt=json \
-                                -out=gosec-report.json \
-                                ./... || true
-                            echo "gosec done ✓"
-                        else
-                            echo "gosec not installed — skipping"
-                        fi
-                    '''
+                        // Health check each service
+                        services.each { svc ->
+                            retry(5) {
+                                sh """
+                                    curl -sf ${svc.health} \
+                                        || (sleep 5 && exit 1)
+                                    echo "${svc.name} health OK ✓"
+                                """
+                            }
+                        }
+
+                        // Functional API tests via gateway
+                        sh '''
+                            echo "=== Gateway routing tests ==="
+
+                            curl -sf http://localhost:8081/api/users \
+                                | python3 -c "import sys,json; \
+                                    d=json.load(sys.stdin); \
+                                    print(f'Users: {len(d)} ✓')"
+
+                            curl -sf http://localhost:8081/api/orders \
+                                | python3 -c "import sys,json; \
+                                    d=json.load(sys.stdin); \
+                                    print(f'Orders: {len(d)} ✓')"
+
+                            curl -sf http://localhost:8081/api/notifications \
+                                | python3 -c "import sys,json; \
+                                    d=json.load(sys.stdin); \
+                                    print(f'Notifications: {len(d)} ✓')"
+
+                            echo "All integration tests passed ✓"
+                        '''
+
+                    } finally {
+                        sh 'docker compose down -v || true'
+                    }
                 }
             }
             post {
-                always {
+                failure {
+                    sh '''
+                        docker compose logs > compose-failure.log 2>&1 || true
+                    '''
                     archiveArtifacts(
-                        artifacts:        'gateway/gosec-report.json',
+                        artifacts:        'compose-failure.log',
                         allowEmptyArchive: true
                     )
                 }
             }
         }
 
-        // Binary build uses CGO_ENABLED=0 for static binary
-        stage('Build Binary') {
-            steps {
-                dir('gateway') {
-                    sh """
-                        echo "=== Building static binary ==="
-                        CGO_ENABLED=0 go build \
-                            -ldflags="-w -s \
-                                -X main.Version=${BUILD_NUMBER} \
-                                -X main.Commit=${env.SHORT_SHA}" \
-                            -o gateway-bin \
-                            .
-
-                        echo "Binary size: \$(du -sh gateway-bin | cut -f1) ✓"
-                        file gateway-bin
-                    """
-                }
-            }
-            post {
-                failure {
-                    echo "❌ Binary build failed"
-                }
-            }
-        }
-
-        stage('Docker Build') {
-            steps {
-                dir('gateway') {
-                    sh """
-                        docker build \
-                            --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
-                            --build-arg GIT_COMMIT=${env.SHORT_SHA} \
-                            -t ${IMAGE_NAME}:${IMAGE_TAG} \
-                            -t ${IMAGE_NAME}:latest \
-                            .
-                        echo "Built: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
-                    """
-                }
-            }
-            post {
-                failure {
-                    sh "docker image prune -f || true"
-                }
-            }
-        }
-
-        stage('Docker Push') {
+        // ── Push all images — main branch only ────────────
+        stage('Push All Images') {
             when { branch 'main' }
             steps {
                 withCredentials([usernamePassword(
@@ -257,14 +205,75 @@ pipeline {
                     usernameVariable: 'DOCKER_USER',
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
-                    sh """
-                        echo ${DOCKER_PASS} | docker login \
-                            -u ${DOCKER_USER} --password-stdin
-                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                        docker push ${IMAGE_NAME}:latest
-                        docker logout
-                        echo "Pushed: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
-                    """
+                    script {
+                        sh """
+                            echo ${DOCKER_PASS} | docker login \
+                                -u ${DOCKER_USER} \
+                                --password-stdin
+                        """
+                        services.each { svc ->
+                            sh """
+                                docker push ${svc.image}:${APP_VERSION}
+                                docker push ${svc.image}:latest
+                                echo "Pushed ${svc.image}:${APP_VERSION} ✓"
+                            """
+                        }
+                        sh 'docker logout'
+                    }
+                }
+            }
+        }
+
+        // ── Deploy — gated on parameter ───────────────────
+        stage('Deploy') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { params.DEPLOY == true }
+                }
+            }
+            steps {
+                script {
+                    if (params.ENVIRONMENT == 'prod') {
+                        input(
+                            message: """
+                                Deploy NexLayer v${APP_VERSION} to PRODUCTION?
+                                Commit: ${env.SHORT_SHA}
+                                Author: ${env.AUTHOR}
+                            """.stripIndent(),
+                            ok:        'Deploy',
+                            submitter: 'devops-leads'
+                        )
+                    }
+
+                    sh "kubectl apply -f k8s/ -n ${params.ENVIRONMENT}"
+
+                    services.each { svc ->
+                        sh """
+                            kubectl set image deployment/${svc.name} \
+                                app=${svc.image}:${APP_VERSION} \
+                                -n ${params.ENVIRONMENT}
+
+                            kubectl rollout status deployment/${svc.name} \
+                                -n ${params.ENVIRONMENT} \
+                                --timeout=120s
+
+                            echo "Deployed ${svc.name} ✓"
+                        """
+                    }
+                }
+            }
+            post {
+                failure {
+                    script {
+                        services.each { svc ->
+                            sh """
+                                kubectl rollout undo deployment/${svc.name} \
+                                    -n ${params.ENVIRONMENT} || true
+                            """
+                        }
+                        echo "❌ Deploy failed — all services rolled back"
+                    }
                 }
             }
         }
@@ -272,17 +281,323 @@ pipeline {
 
     post {
         always {
-            sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
+            script {
+                services.each { svc ->
+                    sh "docker rmi ${svc.image}:${APP_VERSION} || true"
+                }
+            }
             cleanWs()
         }
         success {
-            echo "✅ ${SERVICE_NAME} #${BUILD_NUMBER} passed | ${env.BRANCH}"
+            echo """
+                ✅ NexLayer v${APP_VERSION} — ALL PASSED
+                Branch:  ${env.BRANCH}
+                Commit:  ${env.SHORT_SHA}
+                Author:  ${env.AUTHOR}
+                Target:  ${params.ENVIRONMENT}
+                Logs:    ${BUILD_URL}
+            """.stripIndent()
         }
         failure {
-            echo "❌ ${SERVICE_NAME} #${BUILD_NUMBER} failed | ${BUILD_URL}console"
+            echo """
+                ❌ NexLayer v${APP_VERSION} — FAILED
+                Branch:  ${env.BRANCH}
+                Commit:  ${env.SHORT_SHA}
+                Author:  ${env.AUTHOR}
+                Logs:    ${BUILD_URL}console
+            """.stripIndent()
         }
     }
 }
+
+
+// // gateway/Jenkinsfile
+// pipeline {
+//     agent any
+
+//     environment {
+//         SERVICE_NAME = 'gateway'
+//         IMAGE_NAME   = 'santonix/gateway'
+//         IMAGE_TAG    = "${BUILD_NUMBER}"
+//         DOCKER_CRED  = 'dockerhub'
+//         // CGO_ENABLED=0 for binary build — NOT for tests
+//         // Tests override this per stage
+//         GOOS         = 'linux'
+//         GOARCH       = 'amd64'
+//         GOPATH       = "${WORKSPACE}/.gopath"
+//         GOCACHE      = "${WORKSPACE}/.gocache"
+//     }
+
+//     stages {
+
+//         stage('Checkout') {
+//             steps {
+//                 checkout scm
+//                 script {
+//                     env.BRANCH = env.BRANCH_NAME ?: sh(
+//                         script: 'git rev-parse --abbrev-ref HEAD',
+//                         returnStdout: true
+//                     ).trim()
+//                     env.SHORT_SHA = sh(
+//                         script: 'git rev-parse --short HEAD',
+//                         returnStdout: true
+//                     ).trim()
+//                     env.AUTHOR = sh(
+//                         script: 'git log -1 --pretty=%an',
+//                         returnStdout: true
+//                     ).trim()
+//                     echo """
+//                         Service: ${SERVICE_NAME}
+//                         Branch:  ${env.BRANCH}
+//                         Commit:  ${env.SHORT_SHA}
+//                         Author:  ${env.AUTHOR}
+//                     """.stripIndent()
+//                 }
+//             }
+//         }
+
+//         stage('Pre-flight') {
+//             steps {
+//                 sh '''
+//                     go version
+//                     docker --version
+//                     echo "CGO available: $(go env CGO_ENABLED)"
+//                     echo "CC compiler:   $(go env CC)"
+//                 '''
+//             }
+//         }
+
+//         stage('Dependencies') {
+//             steps {
+//                 dir('gateway') {
+//                     sh """
+//                         mkdir -p ${GOPATH}
+//                         mkdir -p ${GOCACHE}
+//                         go mod download
+//                         go mod verify
+//                         echo "Dependencies ready ✓"
+//                     """
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     echo "❌ go mod failed — check go.mod and go.sum"
+//                 }
+//             }
+//         }
+
+//         stage('Lint') {
+//             steps {
+//                 dir('gateway') {
+//                     sh '''
+//                         echo "=== go vet ==="
+//                         go vet ./...
+//                         echo "go vet ✓"
+
+//                         echo "=== gofmt ==="
+//                         UNFORMATTED=$(gofmt -l .)
+//                         if [ -n "$UNFORMATTED" ]; then
+//                             echo "Auto-formatting: $UNFORMATTED"
+//                             gofmt -w .
+//                             echo "gofmt fixed ✓"
+//                         else
+//                             echo "gofmt ✓"
+//                         fi
+//                     '''
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     echo "❌ Lint failed — ${env.BRANCH}"
+//                 }
+//             }
+//         }
+
+//         stage('Unit Tests') {
+//             steps {
+//                 dir('gateway') {
+//                     sh '''
+//                         echo "=== Go Unit Tests ==="
+
+//                         # CGO_ENABLED=1 needed for -race detector
+//                         # Override the pipeline-level CGO_ENABLED=0
+//                         # If gcc not available — run without -race
+//                         if command -v gcc > /dev/null 2>&1; then
+//                             echo "CGO available — running with race detector"
+//                             CGO_ENABLED=1 go test ./... \
+//                                 -v \
+//                                 -race \
+//                                 -coverprofile=coverage.out \
+//                                 -covermode=atomic \
+//                                 -timeout=60s \
+//                                 2>&1 | tee test-output.txt
+//                         else
+//                             echo "CGO not available — running without race detector"
+//                             CGO_ENABLED=0 go test ./... \
+//                                 -v \
+//                                 -coverprofile=coverage.out \
+//                                 -covermode=count \
+//                                 -timeout=60s \
+//                                 2>&1 | tee test-output.txt
+//                         fi
+
+//                         echo "Tests done ✓"
+//                     '''
+//                 }
+//             }
+//             post {
+//                 always {
+//                     script {
+//                         dir('gateway') {
+//                             // Generate HTML coverage only if coverage.out exists
+//                             if (fileExists('gateway/coverage.out')) {
+//                                 sh '''
+//                                     go tool cover \
+//                                         -html=coverage.out \
+//                                         -o coverage.html
+//                                     go tool cover \
+//                                         -func=coverage.out \
+//                                         | tail -1
+//                                     echo "Coverage report generated ✓"
+//                                 '''
+//                                 publishHTML([
+//                                     reportDir:             'gateway',
+//                                     reportFiles:           'coverage.html',
+//                                     reportName:            'Go Coverage — Gateway',
+//                                     allowMissing:          true,
+//                                     alwaysLinkToLastBuild: true,
+//                                     keepAll:               true
+//                                 ])
+//                             } else {
+//                                 echo "coverage.out not found — tests may have failed before coverage was written"
+//                             }
+
+//                             archiveArtifacts(
+//                                 artifacts:        'test-output.txt',
+//                                 allowEmptyArchive: true
+//                             )
+//                         }
+//                     }
+//                 }
+//                 failure {
+//                     echo "❌ Tests failed — ${env.BRANCH} | ${env.SHORT_SHA}"
+//                 }
+//             }
+//         }
+
+//         stage('Security Scan') {
+//             steps {
+//                 dir('gateway') {
+//                     sh '''
+//                         echo "=== gosec security scan ==="
+//                         go install \
+//                             github.com/securego/gosec/v2/cmd/gosec@latest \
+//                             2>/dev/null || true
+
+//                         if command -v gosec > /dev/null 2>&1; then
+//                             gosec \
+//                                 -fmt=json \
+//                                 -out=gosec-report.json \
+//                                 ./... || true
+//                             echo "gosec done ✓"
+//                         else
+//                             echo "gosec not installed — skipping"
+//                         fi
+//                     '''
+//                 }
+//             }
+//             post {
+//                 always {
+//                     archiveArtifacts(
+//                         artifacts:        'gateway/gosec-report.json',
+//                         allowEmptyArchive: true
+//                     )
+//                 }
+//             }
+//         }
+
+//         // Binary build uses CGO_ENABLED=0 for static binary
+//         stage('Build Binary') {
+//             steps {
+//                 dir('gateway') {
+//                     sh """
+//                         echo "=== Building static binary ==="
+//                         CGO_ENABLED=0 go build \
+//                             -ldflags="-w -s \
+//                                 -X main.Version=${BUILD_NUMBER} \
+//                                 -X main.Commit=${env.SHORT_SHA}" \
+//                             -o gateway-bin \
+//                             .
+
+//                         echo "Binary size: \$(du -sh gateway-bin | cut -f1) ✓"
+//                         file gateway-bin
+//                     """
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     echo "❌ Binary build failed"
+//                 }
+//             }
+//         }
+
+//         stage('Docker Build') {
+//             steps {
+//                 dir('gateway') {
+//                     sh """
+//                         docker build \
+//                             --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+//                             --build-arg GIT_COMMIT=${env.SHORT_SHA} \
+//                             -t ${IMAGE_NAME}:${IMAGE_TAG} \
+//                             -t ${IMAGE_NAME}:latest \
+//                             .
+//                         echo "Built: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
+//                     """
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     sh "docker image prune -f || true"
+//                 }
+//             }
+//         }
+
+//         stage('Docker Push') {
+//             when { branch 'main' }
+//             steps {
+//                 withCredentials([usernamePassword(
+//                     credentialsId: "${DOCKER_CRED}",
+//                     usernameVariable: 'DOCKER_USER',
+//                     passwordVariable: 'DOCKER_PASS'
+//                 )]) {
+//                     sh """
+//                         echo ${DOCKER_PASS} | docker login \
+//                             -u ${DOCKER_USER} --password-stdin
+//                         docker push ${IMAGE_NAME}:${IMAGE_TAG}
+//                         docker push ${IMAGE_NAME}:latest
+//                         docker logout
+//                         echo "Pushed: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
+//                     """
+//                 }
+//             }
+//         }
+//     }
+
+//     post {
+//         always {
+//             sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
+//             cleanWs()
+//         }
+//         success {
+//             echo "✅ ${SERVICE_NAME} #${BUILD_NUMBER} passed | ${env.BRANCH}"
+//         }
+//         failure {
+//             echo "❌ ${SERVICE_NAME} #${BUILD_NUMBER} failed | ${BUILD_URL}console"
+//         }
+//     }
+// }
+
+// ################################## notif jenkinsfile  ###############################################################
 
 // // notification-service/Jenkinsfile
 // pipeline {
