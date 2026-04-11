@@ -4,16 +4,19 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
+    "dev":   "nodemon app.js",
     "test":  "jest --forceExit --detectOpenHandles"
   },
   "jest": {
-    "testEnvironment":       "node",
-    "testMatch":             ["**/tests/**/*.test.js"],
+    "testEnvironment":        "node",
+    "testMatch":              ["**/tests/**/*.test.js"],
     "testPathIgnorePatterns": ["/node_modules/"],
-    "collectCoverageFrom":   ["app.js"],
+    "collectCoverageFrom":    ["app.js"],
     "coverageThreshold": {
       "global": {
-        "lines": 50
+        "lines":     50,
+        "functions": 50,
+        "branches":  30
       }
     }
   },
@@ -24,6 +27,7 @@
   "devDependencies": {
     "jest":       "^29.7.0",
     "supertest":  "^6.3.4",
-    "jest-junit": "^16.0.0"
+    "jest-junit": "^16.0.0",
+    "nodemon":    "^3.0.2"
   }
 }

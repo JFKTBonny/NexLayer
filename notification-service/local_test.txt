@@ -1,0 +1,30 @@
+cd notification-service
+
+# Install dependencies
+npm install
+
+# Run tests — should pass with mocked DB
+npm test
+
+# Expected output:
+# PASS tests/app.test.js
+#   GET /health
+#     ✓ returns up when DB is reachable
+#     ✓ returns down when DB is unreachable
+#   GET /api/notifications
+#     ✓ returns list of notifications
+#     ✓ returns 500 on DB error
+#   POST /api/notifications
+#     ✓ creates notification with valid body
+#     ✓ returns 400 when user_id missing
+#     ✓ returns 400 when type missing
+#     ✓ returns 400 when message missing
+#     ✓ returns 400 when body is empty
+#   GET /api/notifications/pending
+#     ✓ returns only unsent notifications
+#   PUT /api/notifications/:id/send
+#     ✓ marks notification as sent
+#     ✓ returns 404 when notification not found
+#
+# Tests: 12 passed
+# Coverage: app.js | statements 70%+

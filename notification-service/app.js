@@ -5,7 +5,6 @@ const mysql   = require('mysql2/promise');
 const app = express();
 app.use(express.json());
 
-// DB connection pool
 const pool = mysql.createPool({
     host:     process.env.DB_HOST     || 'mysql',
     user:     process.env.DB_USER     || 'root',
@@ -21,7 +20,11 @@ app.get('/health', async (req, res) => {
         await pool.query('SELECT 1');
         res.json({ service: 'notification-service', status: 'up' });
     } catch (err) {
-        res.status(500).json({ service: 'notification-service', status: 'down', error: err.message });
+        res.status(500).json({
+            service: 'notification-service',
+            status:  'down',
+            error:   err.message
+        });
     }
 });
 
@@ -50,12 +53,26 @@ app.get('/api/notifications/user/:userId', async (req, res) => {
     }
 });
 
+// Get pending notifications
+app.get('/api/notifications/pending', async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT * FROM notifications WHERE sent = FALSE'
+        );
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Create notification
 app.post('/api/notifications', async (req, res) => {
     const { user_id, type, message } = req.body;
 
     if (!user_id || !type || !message) {
-        return res.status(400).json({ error: 'user_id, type, message required' });
+        return res.status(400).json({
+            error: 'user_id, type, message required'
+        });
     }
 
     try {
@@ -63,20 +80,16 @@ app.post('/api/notifications', async (req, res) => {
             'INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)',
             [user_id, type, message]
         );
-
-        // Simulate sending notification
-        console.log(`[${type.toUpperCase()}] To user ${user_id}: ${message}`);
-
         res.status(201).json({
             id:      result.insertId,
-            message: 'Notification created and queued'
+            message: 'Notification created'
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Mark notification as sent
+// Mark as sent
 app.put('/api/notifications/:id/send', async (req, res) => {
     try {
         const [result] = await pool.query(
@@ -92,19 +105,19 @@ app.put('/api/notifications/:id/send', async (req, res) => {
     }
 });
 
-// Get unsent notifications
-app.get('/api/notifications/pending', async (req, res) => {
-    try {
-        const [rows] = await pool.query(
-            'SELECT * FROM notifications WHERE sent = FALSE'
-        );
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Notification service running on port ${PORT}`));
-
+// ── Export app BEFORE calling listen ─────────────────────
+// Tests require this module — they get the app object
+// without triggering listen()
 module.exports = app;
+
+// ── Only start server when run directly ──────────────────
+// require.main === module is true only when:
+//   node app.js         ← direct execution
+// It is false when:
+//   require('./app')    ← required by tests
+if (require.main === module) {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+        console.log(`Notification service running on port ${PORT}`);
+    });
+}
