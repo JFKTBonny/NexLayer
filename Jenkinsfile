@@ -6,8 +6,9 @@ pipeline {
         SERVICE_NAME = 'gateway'
         IMAGE_NAME   = 'santonix/gateway'
         IMAGE_TAG    = "${BUILD_NUMBER}"
-        DOCKER_CRED  = 'dockerhub'
-        CGO_ENABLED  = '0'
+        DOCKER_CRED  = 'dockerhub-creds'
+        // CGO_ENABLED=0 for binary build — NOT for tests
+        // Tests override this per stage
         GOOS         = 'linux'
         GOARCH       = 'amd64'
         GOPATH       = "${WORKSPACE}/.gopath"
@@ -47,6 +48,8 @@ pipeline {
                 sh '''
                     go version
                     docker --version
+                    echo "CGO available: $(go env CGO_ENABLED)"
+                    echo "CC compiler:   $(go env CC)"
                 '''
             }
         }
@@ -63,6 +66,11 @@ pipeline {
                     """
                 }
             }
+            post {
+                failure {
+                    echo "❌ go mod failed — check go.mod and go.sum"
+                }
+            }
         }
 
         stage('Lint') {
@@ -76,13 +84,18 @@ pipeline {
                         echo "=== gofmt ==="
                         UNFORMATTED=$(gofmt -l .)
                         if [ -n "$UNFORMATTED" ]; then
-                            echo "Needs formatting: $UNFORMATTED"
+                            echo "Auto-formatting: $UNFORMATTED"
                             gofmt -w .
-                            echo "Auto-formatted ✓"
+                            echo "gofmt fixed ✓"
                         else
                             echo "gofmt ✓"
                         fi
                     '''
+                }
+            }
+            post {
+                failure {
+                    echo "❌ Lint failed — ${env.BRANCH}"
                 }
             }
         }
@@ -90,46 +103,68 @@ pipeline {
         stage('Unit Tests') {
             steps {
                 dir('gateway') {
-                    sh """
-                        go test ./... \
-                            -v \
-                            -race \
-                            -coverprofile=coverage.out \
-                            -covermode=atomic \
-                            -timeout=60s \
-                            2>&1 | tee test-output.txt
+                    sh '''
+                        echo "=== Go Unit Tests ==="
 
-                        go tool cover \
-                            -html=coverage.out \
-                            -o coverage.html
+                        # CGO_ENABLED=1 needed for -race detector
+                        # Override the pipeline-level CGO_ENABLED=0
+                        # If gcc not available — run without -race
+                        if command -v gcc > /dev/null 2>&1; then
+                            echo "CGO available — running with race detector"
+                            CGO_ENABLED=1 go test ./... \
+                                -v \
+                                -race \
+                                -coverprofile=coverage.out \
+                                -covermode=atomic \
+                                -timeout=60s \
+                                2>&1 | tee test-output.txt
+                        else
+                            echo "CGO not available — running without race detector"
+                            CGO_ENABLED=0 go test ./... \
+                                -v \
+                                -coverprofile=coverage.out \
+                                -covermode=count \
+                                -timeout=60s \
+                                2>&1 | tee test-output.txt
+                        fi
 
-                        go tool cover \
-                            -func=coverage.out | tail -1
-
-                        echo "Tests passed ✓"
-                    """
+                        echo "Tests done ✓"
+                    '''
                 }
             }
             post {
                 always {
                     script {
-                        if (fileExists('gateway/coverage.html')) {
-                            publishHTML([
-                                reportDir:             'gateway',
-                                reportFiles:           'coverage.html',
-                                reportName:            'Go Coverage — Gateway',
-                                allowMissing:          true,
-                                alwaysLinkToLastBuild: true,
-                                keepAll:               true
-                            ])
-                        } else {
-                            echo "No coverage report — skipping"
+                        dir('gateway') {
+                            // Generate HTML coverage only if coverage.out exists
+                            if (fileExists('gateway/coverage.out')) {
+                                sh '''
+                                    go tool cover \
+                                        -html=coverage.out \
+                                        -o coverage.html
+                                    go tool cover \
+                                        -func=coverage.out \
+                                        | tail -1
+                                    echo "Coverage report generated ✓"
+                                '''
+                                publishHTML([
+                                    reportDir:             'gateway',
+                                    reportFiles:           'coverage.html',
+                                    reportName:            'Go Coverage — Gateway',
+                                    allowMissing:          true,
+                                    alwaysLinkToLastBuild: true,
+                                    keepAll:               true
+                                ])
+                            } else {
+                                echo "coverage.out not found — tests may have failed before coverage was written"
+                            }
+
+                            archiveArtifacts(
+                                artifacts:        'test-output.txt',
+                                allowEmptyArchive: true
+                            )
                         }
                     }
-                    archiveArtifacts(
-                        artifacts:        'gateway/test-output.txt',
-                        allowEmptyArchive: true
-                    )
                 }
                 failure {
                     echo "❌ Tests failed — ${env.BRANCH} | ${env.SHORT_SHA}"
@@ -141,17 +176,19 @@ pipeline {
             steps {
                 dir('gateway') {
                     sh '''
+                        echo "=== gosec security scan ==="
                         go install \
                             github.com/securego/gosec/v2/cmd/gosec@latest \
                             2>/dev/null || true
 
                         if command -v gosec > /dev/null 2>&1; then
-                            gosec -fmt=json \
+                            gosec \
+                                -fmt=json \
                                 -out=gosec-report.json \
                                 ./... || true
                             echo "gosec done ✓"
                         else
-                            echo "gosec not available — skipping"
+                            echo "gosec not installed — skipping"
                         fi
                     '''
                 }
@@ -166,18 +203,27 @@ pipeline {
             }
         }
 
+        // Binary build uses CGO_ENABLED=0 for static binary
         stage('Build Binary') {
             steps {
                 dir('gateway') {
                     sh """
-                        go build \
+                        echo "=== Building static binary ==="
+                        CGO_ENABLED=0 go build \
                             -ldflags="-w -s \
                                 -X main.Version=${BUILD_NUMBER} \
                                 -X main.Commit=${env.SHORT_SHA}" \
                             -o gateway-bin \
                             .
-                        echo "Binary: \$(du -sh gateway-bin | cut -f1) ✓"
+
+                        echo "Binary size: \$(du -sh gateway-bin | cut -f1) ✓"
+                        file gateway-bin
                     """
+                }
+            }
+            post {
+                failure {
+                    echo "❌ Binary build failed"
                 }
             }
         }
@@ -217,7 +263,7 @@ pipeline {
                         docker push ${IMAGE_NAME}:${IMAGE_TAG}
                         docker push ${IMAGE_NAME}:latest
                         docker logout
-                        echo "Pushed ✓"
+                        echo "Pushed: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
                     """
                 }
             }
@@ -237,7 +283,6 @@ pipeline {
         }
     }
 }
-
 
 // // notification-service/Jenkinsfile
 // pipeline {
