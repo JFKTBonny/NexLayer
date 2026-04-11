@@ -1,314 +1,316 @@
-// Jenkinsfile — repo root
-// Orchestrates all 4 NexLayer services
+// // Jenkinsfile — repo root
+// // Orchestrates all 4 NexLayer services
 
-def services = [
-    [
-        name:    'user-service',
-        image:   'santonix/users',
-        dir:     'user-service',
-        port:    '5000',
-        health:  'http://localhost:5000/health'
-    ],
-    [
-        name:    'order-service',
-        image:   'santonix/orders',
-        dir:     'order-service',
-        port:    '8080',
-        health:  'http://localhost:8080/actuator/health'
-    ],
-    [
-        name:    'notification-service',
-        image:   'santonix/notify',
-        dir:     'notification-service',
-        port:    '3000',
-        health:  'http://localhost:3000/health'
-    ],
-    [
-        name:    'gateway',
-        image:   'santonix/gateway',
-        dir:     'gateway',
-        port:    '8081',
-        health:  'http://localhost:8081/health'
-    ]
-]
+// def services = [
+//     [
+//         name:    'user-service',
+//         image:   'santonix/users',
+//         dir:     'user-service',
+//         port:    '5000',
+//         health:  'http://localhost:5000/health'
+//     ],
+//     [
+//         name:    'order-service',
+//         image:   'santonix/orders',
+//         dir:     'order-service',
+//         port:    '8080',
+//         health:  'http://localhost:8080/actuator/health'
+//     ],
+//     [
+//         name:    'notification-service',
+//         image:   'santonix/notify',
+//         dir:     'notification-service',
+//         port:    '3000',
+//         health:  'http://localhost:3000/health'
+//     ],
+//     [
+//         name:    'gateway',
+//         image:   'santonix/gateway',
+//         dir:     'gateway',
+//         port:    '8081',
+//         health:  'http://localhost:8081/health'
+//     ]
+// ]
 
-pipeline {
-    agent any
+// pipeline {
+//     agent any
 
-    environment {
-        APP_NAME    = 'NexLayer'
-        APP_VERSION = "1.0.${BUILD_NUMBER}"
-        DOCKER_CRED = 'dockerhub'
-    }
+//     environment {
+//         APP_NAME    = 'NexLayer'
+//         APP_VERSION = "1.0.${BUILD_NUMBER}"
+//         DOCKER_CRED = 'dockerhub'
+//     }
 
-    parameters {
-        choice(
-            name:        'ENVIRONMENT',
-            choices:     ['dev', 'staging', 'prod'],
-            description: 'Target deploy environment'
-        )
-        booleanParam(
-            name:         'RUN_INTEGRATION_TESTS',
-            defaultValue: true,
-            description:  'Run full stack integration tests'
-        )
-        booleanParam(
-            name:         'DEPLOY',
-            defaultValue: false,
-            description:  'Deploy after successful build'
-        )
-    }
+//     parameters {
+//         choice(
+//             name:        'ENVIRONMENT',
+//             choices:     ['dev', 'staging', 'prod'],
+//             description: 'Target deploy environment'
+//         )
+//         booleanParam(
+//             name:         'RUN_INTEGRATION_TESTS',
+//             defaultValue: true,
+//             description:  'Run full stack integration tests'
+//         )
+//         booleanParam(
+//             name:         'DEPLOY',
+//             defaultValue: false,
+//             description:  'Deploy after successful build'
+//         )
+//     }
 
-    options {
-        timeout(time: 60, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '15'))
-        disableConcurrentBuilds()
-    }
+//     options {
+//         timeout(time: 60, unit: 'MINUTES')
+//         buildDiscarder(logRotator(numToKeepStr: '15'))
+//         disableConcurrentBuilds()
+//     }
 
-    stages {
+//     stages {
 
-        stage('Checkout') {
-            steps {
-                checkout scm
-                script {
-                    env.BRANCH = env.BRANCH_NAME ?: sh(
-                        script: 'git rev-parse --abbrev-ref HEAD',
-                        returnStdout: true
-                    ).trim()
-                    env.SHORT_SHA = sh(
-                        script: 'git rev-parse --short HEAD',
-                        returnStdout: true
-                    ).trim()
-                    env.AUTHOR = sh(
-                        script: 'git log -1 --pretty=%an',
-                        returnStdout: true
-                    ).trim()
+//         stage('Checkout') {
+//             steps {
+//                 checkout scm
+//                 script {
+//                     env.BRANCH = env.BRANCH_NAME ?: sh(
+//                         script: 'git rev-parse --abbrev-ref HEAD',
+//                         returnStdout: true
+//                     ).trim()
+//                     env.SHORT_SHA = sh(
+//                         script: 'git rev-parse --short HEAD',
+//                         returnStdout: true
+//                     ).trim()
+//                     env.AUTHOR = sh(
+//                         script: 'git log -1 --pretty=%an',
+//                         returnStdout: true
+//                     ).trim()
 
-                    echo """
-                        ╔══════════════════════════════════════╗
-                        ║  NexLayer Master Pipeline
-                        ╠══════════════════════════════════════╣
-                        ║  Version:  ${APP_VERSION}
-                        ║  Branch:   ${env.BRANCH}
-                        ║  Commit:   ${env.SHORT_SHA}
-                        ║  Author:   ${env.AUTHOR}
-                        ║  Target:   ${params.ENVIRONMENT}
-                        ╚══════════════════════════════════════╝
-                    """.stripIndent()
-                }
-            }
-        }
+//                     echo """
+//                         ╔══════════════════════════════════════╗
+//                         ║  NexLayer Master Pipeline
+//                         ╠══════════════════════════════════════╣
+//                         ║  Version:  ${APP_VERSION}
+//                         ║  Branch:   ${env.BRANCH}
+//                         ║  Commit:   ${env.SHORT_SHA}
+//                         ║  Author:   ${env.AUTHOR}
+//                         ║  Target:   ${params.ENVIRONMENT}
+//                         ╚══════════════════════════════════════╝
+//                     """.stripIndent()
+//                 }
+//             }
+//         }
 
-        // ── Build all 4 services in parallel ─────────────
-        stage('Build All Services') {
-            steps {
-                script {
-                    def builds = [:]
-                    services.each { svc ->
-                        def s = svc
-                        builds["Build: ${s.name}"] = {
-                            dir(s.dir) {
-                                sh """
-                                    docker build \
-                                        --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
-                                        --build-arg GIT_COMMIT=${env.SHORT_SHA} \
-                                        -t ${s.image}:${APP_VERSION} \
-                                        -t ${s.image}:latest \
-                                        .
-                                    echo "✅ Built ${s.image}:${APP_VERSION}"
-                                """
-                            }
-                        }
-                    }
-                    parallel builds
-                }
-            }
-            post {
-                failure {
-                    echo "❌ One or more service builds failed"
-                }
-            }
-        }
+//         // ── Build all 4 services in parallel ─────────────
+//         stage('Build All Services') {
+//             steps {
+//                 script {
+//                     def builds = [:]
+//                     services.each { svc ->
+//                         def s = svc
+//                         builds["Build: ${s.name}"] = {
+//                             dir(s.dir) {
+//                                 sh """
+//                                     docker build \
+//                                         --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+//                                         --build-arg GIT_COMMIT=${env.SHORT_SHA} \
+//                                         -t ${s.image}:${APP_VERSION} \
+//                                         -t ${s.image}:latest \
+//                                         .
+//                                     echo "✅ Built ${s.image}:${APP_VERSION}"
+//                                 """
+//                             }
+//                         }
+//                     }
+//                     parallel builds
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     echo "❌ One or more service builds failed"
+//                 }
+//             }
+//         }
 
-        // ── Integration tests — full stack ────────────────
-        stage('Integration Tests') {
-            when {
-                expression { params.RUN_INTEGRATION_TESTS == true }
-            }
-            steps {
-                script {
-                    try {
-                        sh '''
-                            echo "Starting NexLayer stack..."
-                            docker compose up -d
-                            echo "Waiting for services..."
-                            sleep 25
-                        '''
+//         // ── Integration tests — full stack ────────────────
+//         stage('Integration Tests') {
+//             when {
+//                 expression { params.RUN_INTEGRATION_TESTS == true }
+//             }
+//             steps {
+//                 script {
+//                     try {
+//                         sh '''
+//                             echo "Starting NexLayer stack..."
+//                             docker compose up -d
+//                             echo "Waiting for services..."
+//                             sleep 25
+//                         '''
 
-                        // Health check each service
-                        services.each { svc ->
-                            retry(5) {
-                                sh """
-                                    curl -sf ${svc.health} \
-                                        || (sleep 5 && exit 1)
-                                    echo "${svc.name} health OK ✓"
-                                """
-                            }
-                        }
+//                         // Health check each service
+//                         services.each { svc ->
+//                             retry(5) {
+//                                 sh """
+//                                     curl -sf ${svc.health} \
+//                                         || (sleep 5 && exit 1)
+//                                     echo "${svc.name} health OK ✓"
+//                                 """
+//                             }
+//                         }
 
-                        // Functional API tests via gateway
-                        sh '''
-                            echo "=== Gateway routing tests ==="
+//                         // Functional API tests via gateway
+//                         sh '''
+//                             echo "=== Gateway routing tests ==="
 
-                            curl -sf http://localhost:8081/api/users \
-                                | python3 -c "import sys,json; \
-                                    d=json.load(sys.stdin); \
-                                    print(f'Users: {len(d)} ✓')"
+//                             curl -sf http://localhost:8081/api/users \
+//                                 | python3 -c "import sys,json; \
+//                                     d=json.load(sys.stdin); \
+//                                     print(f'Users: {len(d)} ✓')"
 
-                            curl -sf http://localhost:8081/api/orders \
-                                | python3 -c "import sys,json; \
-                                    d=json.load(sys.stdin); \
-                                    print(f'Orders: {len(d)} ✓')"
+//                             curl -sf http://localhost:8081/api/orders \
+//                                 | python3 -c "import sys,json; \
+//                                     d=json.load(sys.stdin); \
+//                                     print(f'Orders: {len(d)} ✓')"
 
-                            curl -sf http://localhost:8081/api/notifications \
-                                | python3 -c "import sys,json; \
-                                    d=json.load(sys.stdin); \
-                                    print(f'Notifications: {len(d)} ✓')"
+//                             curl -sf http://localhost:8081/api/notifications \
+//                                 | python3 -c "import sys,json; \
+//                                     d=json.load(sys.stdin); \
+//                                     print(f'Notifications: {len(d)} ✓')"
 
-                            echo "All integration tests passed ✓"
-                        '''
+//                             echo "All integration tests passed ✓"
+//                         '''
 
-                    } finally {
-                        sh 'docker compose down -v || true'
-                    }
-                }
-            }
-            post {
-                failure {
-                    sh '''
-                        docker compose logs > compose-failure.log 2>&1 || true
-                    '''
-                    archiveArtifacts(
-                        artifacts:        'compose-failure.log',
-                        allowEmptyArchive: true
-                    )
-                }
-            }
-        }
+//                     } finally {
+//                         sh 'docker compose down -v || true'
+//                     }
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     sh '''
+//                         docker compose logs > compose-failure.log 2>&1 || true
+//                     '''
+//                     archiveArtifacts(
+//                         artifacts:        'compose-failure.log',
+//                         allowEmptyArchive: true
+//                     )
+//                 }
+//             }
+//         }
 
-        // ── Push all images — main branch only ────────────
-        stage('Push All Images') {
-            when { branch 'main' }
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CRED}",
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    script {
-                        sh """
-                            echo ${DOCKER_PASS} | docker login \
-                                -u ${DOCKER_USER} \
-                                --password-stdin
-                        """
-                        services.each { svc ->
-                            sh """
-                                docker push ${svc.image}:${APP_VERSION}
-                                docker push ${svc.image}:latest
-                                echo "Pushed ${svc.image}:${APP_VERSION} ✓"
-                            """
-                        }
-                        sh 'docker logout'
-                    }
-                }
-            }
-        }
+//         // ── Push all images — main branch only ────────────
+//         stage('Push All Images') {
+//             when { branch 'main' }
+//             steps {
+//                 withCredentials([usernamePassword(
+//                     credentialsId: "${DOCKER_CRED}",
+//                     usernameVariable: 'DOCKER_USER',
+//                     passwordVariable: 'DOCKER_PASS'
+//                 )]) {
+//                     script {
+//                         sh """
+//                             echo ${DOCKER_PASS} | docker login \
+//                                 -u ${DOCKER_USER} \
+//                                 --password-stdin
+//                         """
+//                         services.each { svc ->
+//                             sh """
+//                                 docker push ${svc.image}:${APP_VERSION}
+//                                 docker push ${svc.image}:latest
+//                                 echo "Pushed ${svc.image}:${APP_VERSION} ✓"
+//                             """
+//                         }
+//                         sh 'docker logout'
+//                     }
+//                 }
+//             }
+//         }
 
-        // ── Deploy — gated on parameter ───────────────────
-        stage('Deploy') {
-            when {
-                allOf {
-                    branch 'main'
-                    expression { params.DEPLOY == true }
-                }
-            }
-            steps {
-                script {
-                    if (params.ENVIRONMENT == 'prod') {
-                        input(
-                            message: """
-                                Deploy NexLayer v${APP_VERSION} to PRODUCTION?
-                                Commit: ${env.SHORT_SHA}
-                                Author: ${env.AUTHOR}
-                            """.stripIndent(),
-                            ok:        'Deploy',
-                            submitter: 'devops-leads'
-                        )
-                    }
+//         // ── Deploy — gated on parameter ───────────────────
+//         stage('Deploy') {
+//             when {
+//                 allOf {
+//                     branch 'main'
+//                     expression { params.DEPLOY == true }
+//                 }
+//             }
+//             steps {
+//                 script {
+//                     if (params.ENVIRONMENT == 'prod') {
+//                         input(
+//                             message: """
+//                                 Deploy NexLayer v${APP_VERSION} to PRODUCTION?
+//                                 Commit: ${env.SHORT_SHA}
+//                                 Author: ${env.AUTHOR}
+//                             """.stripIndent(),
+//                             ok:        'Deploy',
+//                             submitter: 'devops-leads'
+//                         )
+//                     }
 
-                    sh "kubectl apply -f k8s/ -n ${params.ENVIRONMENT}"
+//                     sh "kubectl apply -f k8s/ -n ${params.ENVIRONMENT}"
 
-                    services.each { svc ->
-                        sh """
-                            kubectl set image deployment/${svc.name} \
-                                app=${svc.image}:${APP_VERSION} \
-                                -n ${params.ENVIRONMENT}
+//                     services.each { svc ->
+//                         sh """
+//                             kubectl set image deployment/${svc.name} \
+//                                 app=${svc.image}:${APP_VERSION} \
+//                                 -n ${params.ENVIRONMENT}
 
-                            kubectl rollout status deployment/${svc.name} \
-                                -n ${params.ENVIRONMENT} \
-                                --timeout=120s
+//                             kubectl rollout status deployment/${svc.name} \
+//                                 -n ${params.ENVIRONMENT} \
+//                                 --timeout=120s
 
-                            echo "Deployed ${svc.name} ✓"
-                        """
-                    }
-                }
-            }
-            post {
-                failure {
-                    script {
-                        services.each { svc ->
-                            sh """
-                                kubectl rollout undo deployment/${svc.name} \
-                                    -n ${params.ENVIRONMENT} || true
-                            """
-                        }
-                        echo "❌ Deploy failed — all services rolled back"
-                    }
-                }
-            }
-        }
-    }
+//                             echo "Deployed ${svc.name} ✓"
+//                         """
+//                     }
+//                 }
+//             }
+//             post {
+//                 failure {
+//                     script {
+//                         services.each { svc ->
+//                             sh """
+//                                 kubectl rollout undo deployment/${svc.name} \
+//                                     -n ${params.ENVIRONMENT} || true
+//                             """
+//                         }
+//                         echo "❌ Deploy failed — all services rolled back"
+//                     }
+//                 }
+//             }
+//         }
+//     }
 
-    post {
-        always {
-            script {
-                services.each { svc ->
-                    sh "docker rmi ${svc.image}:${APP_VERSION} || true"
-                }
-            }
-            cleanWs()
-        }
-        success {
-            echo """
-                ✅ NexLayer v${APP_VERSION} — ALL PASSED
-                Branch:  ${env.BRANCH}
-                Commit:  ${env.SHORT_SHA}
-                Author:  ${env.AUTHOR}
-                Target:  ${params.ENVIRONMENT}
-                Logs:    ${BUILD_URL}
-            """.stripIndent()
-        }
-        failure {
-            echo """
-                ❌ NexLayer v${APP_VERSION} — FAILED
-                Branch:  ${env.BRANCH}
-                Commit:  ${env.SHORT_SHA}
-                Author:  ${env.AUTHOR}
-                Logs:    ${BUILD_URL}console
-            """.stripIndent()
-        }
-    }
-}
+//     post {
+//         always {
+//             script {
+//                 services.each { svc ->
+//                     sh "docker rmi ${svc.image}:${APP_VERSION} || true"
+//                 }
+//             }
+//             cleanWs()
+//         }
+//         success {
+//             echo """
+//                 ✅ NexLayer v${APP_VERSION} — ALL PASSED
+//                 Branch:  ${env.BRANCH}
+//                 Commit:  ${env.SHORT_SHA}
+//                 Author:  ${env.AUTHOR}
+//                 Target:  ${params.ENVIRONMENT}
+//                 Logs:    ${BUILD_URL}
+//             """.stripIndent()
+//         }
+//         failure {
+//             echo """
+//                 ❌ NexLayer v${APP_VERSION} — FAILED
+//                 Branch:  ${env.BRANCH}
+//                 Commit:  ${env.SHORT_SHA}
+//                 Author:  ${env.AUTHOR}
+//                 Logs:    ${BUILD_URL}console
+//             """.stripIndent()
+//         }
+//     }
+// }
+
+// ########################################################################################################
 
 
 // // gateway/Jenkinsfile
@@ -1184,170 +1186,170 @@ pipeline {
 //  ############################ USER SERVICE  #########################################################################
 
 
-// // user-service/Jenkinsfile — FIXED (stable + production-safe)
+// user-service/Jenkinsfile — FIXED (stable + production-safe)
 
-// pipeline {
-//     agent any
+pipeline {
+    agent any
 
-//     environment {
-//         SERVICE_NAME = 'user-service'
-//         IMAGE_NAME   = 'santonix/users'
-//         IMAGE_TAG    = "${BUILD_NUMBER}"
-//         DOCKER_CRED  = 'dockerhub'
-//         DOCKER_IMAGE = 'santonix/ci-python-docker:latest'
-//     }
+    environment {
+        SERVICE_NAME = 'user-service'
+        IMAGE_NAME   = 'santonix/users'
+        IMAGE_TAG    = "${BUILD_NUMBER}"
+        DOCKER_CRED  = 'dockerhub'
+        DOCKER_IMAGE = 'santonix/ci-python-docker:latest'
+    }
 
-//     stages {
+    stages {
 
-//         stage('Checkout') {
-//             steps {
-//                 checkout scm
-//                 script {
-//                     env.BRANCH = env.BRANCH_NAME ?: sh(
-//                         script: 'git rev-parse --abbrev-ref HEAD',
-//                         returnStdout: true
-//                     ).trim()
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.BRANCH = env.BRANCH_NAME ?: sh(
+                        script: 'git rev-parse --abbrev-ref HEAD',
+                        returnStdout: true
+                    ).trim()
 
-//                     env.SHORT_SHA = sh(
-//                         script: 'git rev-parse --short HEAD',
-//                         returnStdout: true
-//                     ).trim()
+                    env.SHORT_SHA = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
 
-//                     env.AUTHOR = sh(
-//                         script: 'git log -1 --pretty=%an',
-//                         returnStdout: true
-//                     ).trim()
+                    env.AUTHOR = sh(
+                        script: 'git log -1 --pretty=%an',
+                        returnStdout: true
+                    ).trim()
 
-//                     env.DOCKER_GID = sh(
-//                         script: "stat -c %g /var/run/docker.sock",
-//                         returnStdout: true
-//                     ).trim()
+                    env.DOCKER_GID = sh(
+                        script: "stat -c %g /var/run/docker.sock",
+                        returnStdout: true
+                    ).trim()
 
-//                     echo """
-//                     Branch:     ${env.BRANCH}
-//                     Commit:     ${env.SHORT_SHA}
-//                     Author:     ${env.AUTHOR}
-//                     Docker GID: ${env.DOCKER_GID}
-//                     """.stripIndent()
-//                 }
-//             }
-//         }
+                    echo """
+                    Branch:     ${env.BRANCH}
+                    Commit:     ${env.SHORT_SHA}
+                    Author:     ${env.AUTHOR}
+                    Docker GID: ${env.DOCKER_GID}
+                    """.stripIndent()
+                }
+            }
+        }
 
-//         stage('Python CI (Containerized)') {
-//             steps {
-//                 script {
-//                     def dockerArgs = "-v /var/run/docker.sock:/var/run/docker.sock --group-add ${env.DOCKER_GID}"
+        stage('Python CI (Containerized)') {
+            steps {
+                script {
+                    def dockerArgs = "-v /var/run/docker.sock:/var/run/docker.sock --group-add ${env.DOCKER_GID}"
 
-//                     docker.image(env.DOCKER_IMAGE).inside(dockerArgs) {
+                    docker.image(env.DOCKER_IMAGE).inside(dockerArgs) {
 
-//                         dir('user-service') {
+                        dir('user-service') {
 
-//                             sh '''
-//                                 echo "=== Install ==="
-//                                 export HOME=/tmp
-//                                 export PATH=$HOME/.local/bin:$PATH
-//                                 pip install -r requirements.txt --quiet
+                            sh '''
+                                echo "=== Install ==="
+                                export HOME=/tmp
+                                export PATH=$HOME/.local/bin:$PATH
+                                pip install -r requirements.txt --quiet
 
-//                                 echo "=== Lint ==="
-//                                 black app.py --line-length 88
-//                                 flake8 app.py \
-//                                     --max-line-length=88 \
-//                                     --extend-ignore=E203,W503 \
-//                                     --statistics
+                                echo "=== Lint ==="
+                                black app.py --line-length 88
+                                flake8 app.py \
+                                    --max-line-length=88 \
+                                    --extend-ignore=E203,W503 \
+                                    --statistics
 
-//                                 echo "=== Unit Tests ==="
-//                                 pytest tests/ \
-//                                     --ignore=tests/test_integration.py \
-//                                     -v \
-//                                     --junitxml=test-results.xml \
-//                                     --cov=app \
-//                                     --cov-report=xml:coverage.xml \
-//                                     --tb=short
+                                echo "=== Unit Tests ==="
+                                pytest tests/ \
+                                    --ignore=tests/test_integration.py \
+                                    -v \
+                                    --junitxml=test-results.xml \
+                                    --cov=app \
+                                    --cov-report=xml:coverage.xml \
+                                    --tb=short
 
-//                                 echo "=== Security Scan ==="
-//                                 bandit -r app.py \
-//                                     -f json \
-//                                     -o bandit-report.json \
-//                                     --severity-level medium || true
+                                echo "=== Security Scan ==="
+                                bandit -r app.py \
+                                    -f json \
+                                    -o bandit-report.json \
+                                    --severity-level medium || true
 
-//                                 safety check \
-//                                     -r requirements.txt \
-//                                     --json \
-//                                     -o safety-report.json || true
-//                             '''
-//                         }
-//                     }
-//                 }
-//             }
-//             post {
-//                 always {
-//                     junit allowEmptyResults: true,
-//                           testResults: 'user-service/test-results.xml'
+                                safety check \
+                                    -r requirements.txt \
+                                    --json \
+                                    -o safety-report.json || true
+                            '''
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true,
+                          testResults: 'user-service/test-results.xml'
 
-//                     archiveArtifacts(
-//                         artifacts: 'user-service/coverage.xml',
-//                         allowEmptyArchive: true
-//                     )
+                    archiveArtifacts(
+                        artifacts: 'user-service/coverage.xml',
+                        allowEmptyArchive: true
+                    )
 
-//                     archiveArtifacts(
-//                         artifacts: 'user-service/*-report.json',
-//                         allowEmptyArchive: true
-//                     )
-//                 }
-//             }
-//         }
+                    archiveArtifacts(
+                        artifacts: 'user-service/*-report.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
 
-//         stage('Docker Build') {
-//             steps {
-//                 dir('user-service') {
-//                     sh """
-//                         docker build \
-//                             --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
-//                             --build-arg GIT_COMMIT=${env.SHORT_SHA} \
-//                             -t ${IMAGE_NAME}:${IMAGE_TAG} \
-//                             -t ${IMAGE_NAME}:latest \
-//                             .
-//                         echo "Built: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
-//                     """
-//                 }
-//             }
-//         }
+        stage('Docker Build') {
+            steps {
+                dir('user-service') {
+                    sh """
+                        docker build \
+                            --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                            --build-arg GIT_COMMIT=${env.SHORT_SHA} \
+                            -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                            -t ${IMAGE_NAME}:latest \
+                            .
+                        echo "Built: ${IMAGE_NAME}:${IMAGE_TAG} ✓"
+                    """
+                }
+            }
+        }
 
-//         stage('Docker Push') {
-//             when { branch 'main' }
-//             steps {
-//                 withCredentials([usernamePassword(
-//                     credentialsId: "${DOCKER_CRED}",
-//                     usernameVariable: 'DOCKER_USER',
-//                     passwordVariable: 'DOCKER_PASS'
-//                 )]) {
-//                     sh """
-//                         echo ${DOCKER_PASS} | docker login \
-//                             -u ${DOCKER_USER} \
-//                             --password-stdin
+        stage('Docker Push') {
+            when { branch 'main' }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CRED}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        echo ${DOCKER_PASS} | docker login \
+                            -u ${DOCKER_USER} \
+                            --password-stdin
 
-//                         docker push ${IMAGE_NAME}:${IMAGE_TAG}
-//                         docker push ${IMAGE_NAME}:latest
+                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${IMAGE_NAME}:latest
 
-//                         docker logout
-//                         echo "Pushed ✓"
-//                     """
-//                 }
-//             }
-//         }
-//     }
+                        docker logout
+                        echo "Pushed ✓"
+                    """
+                }
+            }
+        }
+    }
 
-//     post {
-//         always {
-//             sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
-//             cleanWs()
-//         }
-//         success {
-//             echo "✅ ${SERVICE_NAME} #${BUILD_NUMBER} passed | ${env.BRANCH}"
-//         }
-//         failure {
-//             echo "❌ ${SERVICE_NAME} #${BUILD_NUMBER} failed | ${BUILD_URL}console"
-//         }
-//     }
-// }
+    post {
+        always {
+            sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
+            cleanWs()
+        }
+        success {
+            echo "✅ ${SERVICE_NAME} #${BUILD_NUMBER} passed | ${env.BRANCH}"
+        }
+        failure {
+            echo "❌ ${SERVICE_NAME} #${BUILD_NUMBER} failed | ${BUILD_URL}console"
+        }
+    }
+}
 
