@@ -154,11 +154,13 @@ EOF
                         testResults:       'notification-service/junit.xml'
                     )
                     publishHTML([
-                        reportDir:   'notification-service/coverage/lcov-report',
-                        reportFiles: 'index.html',
-                        reportName:  'Jest Coverage — Notify',
-                        keepAll:     true
-                    ])
+                    reportDir: 'order-service/target/site/jacoco',
+                    reportFiles: 'index.html',
+                    reportName: 'JaCoCo Coverage — Orders',
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true
+                ])
                 }
                 failure {
                     echo "❌ Tests failed — ${env.BRANCH} | ${env.SHORT_SHA}"
